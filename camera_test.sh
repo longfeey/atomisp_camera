@@ -22,6 +22,7 @@ set -o nounset                              # Treat unset variables as an error
 #1. Primary camera snapshot test
 ./atomisp2_test -i 0 -c  -w 3264 -h 2448
 ./atomisp2_test -i 0 -c  -w 3264 -h 1836
+./atomisp2_test -i 0 -c  -w 2592 -h 1944
 ./atomisp2_test -i 0 -c  -w 2560 -h 1920
 ./atomisp2_test -i 0 -c  -w 2048 -h 1536
 ./atomisp2_test -i 0 -c  -w 2048 -h 1152
@@ -30,12 +31,15 @@ set -o nounset                              # Treat unset variables as an error
 ./atomisp2_test -i 0 -c  -w 1280 -h 960
 ./atomisp2_test -i 0 -c  -w 1280 -h 720
 ./atomisp2_test -i 0 -c  -w 1024 -h 768
+./atomisp2_test -i 0 -c  -w 800  -h 600
 ./atomisp2_test -i 0 -c  -w 640  -h 480
 
 #2. Second camera snapshot test
 ./atomisp2_test -i 1 -c  -w 1280 -h 960
 ./atomisp2_test -i 1 -c  -w 1280 -h 720
-./atomisp2_test -i 1 -c  -w 640 -h 480
+./atomisp2_test -i 1 -c  -w 1024 -h 768
+./atomisp2_test -i 1 -c  -w 800  -h 600
+./atomisp2_test -i 1 -c  -w 640  -h 480
 
 #3. primary camera video record,not dump yuv file
 ./atomisp2_test -i 0 -r  -w 1920 -h 1080
