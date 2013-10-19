@@ -60,6 +60,33 @@
 #define ATOMISP_IOC_S_PARAMETERS            _IOW('v', BASE_VIDIOC_PRIVATE + 61, struct atomisp_parameters)
 #define CLEAR(x)                            memset (&(x), 0, sizeof (x))
 #define main_fd                             video_fds[V4L2_MAIN_DEVICE]
+
+/* #define V4L2_CTRL_CLASS_FLASH 0x009c0000    [> Camera flash controls <] */
+
+/* Camera class:
+ * Exposure, Flash and privacy (indicator) light controls, to be upstreamed */
+#define V4L2_CID_CAMERA_LASTP1             (V4L2_CID_CAMERA_CLASS_BASE + 1024)
+
+/* Request a number of flash-exposed frames. The frame status can be
+ * found in the reserved field in the v4l2_buffer struct. */
+#define V4L2_CID_REQUEST_FLASH             (V4L2_CID_CAMERA_LASTP1 + 3)
+/* Query flash driver status. See enum atomisp_flash_status above. */
+#define V4L2_CID_FLASH_STATUS              (V4L2_CID_CAMERA_LASTP1 + 5)
+/* Set the flash mode (see enum atomisp_flash_mode) */
+#define V4L2_CID_FLASH_MODE                (V4L2_CID_CAMERA_LASTP1 + 10)
+
+/* Flash modes. Default is off.
+ * Setting a flash to TORCH or INDICATOR mode will automatically
+ * turn it on. Setting it to FLASH mode will not turn on the flash
+ * until the FLASH_STROBE command is sent. */
+enum atomisp_flash_mode {
+	ATOMISP_FLASH_MODE_OFF,
+	ATOMISP_FLASH_MODE_FLASH,
+	ATOMISP_FLASH_MODE_TORCH,
+	ATOMISP_FLASH_MODE_INDICATOR,
+};
+
+
 /************************************************************************************/
 enum SensorID
 {
@@ -168,6 +195,7 @@ static int g_width, g_height;
 static int dump = 0;
 static pthread_t preview_thread_id;
 static pthread_t snapshot_thread_id;
+static int flash_en = 0; /* if enable camera flash */
 
  /* if video recording resolution smaller then the preview resolution,
   * we will swap the preview device and the video record device 
@@ -496,6 +524,25 @@ static int v4l2_stream_off(int fd)
     return 0;
 }
 
+static int setFlash(int numFrames)
+{
+    printf("@%s: numFrames = %d", __FUNCTION__, numFrames);
+    if (mCameraID != V4L2_SENSOR_PRIMARY) {
+        printf("Flash is supported only for primary camera!");
+        return -1;
+    }
+    if (numFrames) {
+        if (atomisp_set_attribute(main_fd, V4L2_CID_FLASH_MODE, ATOMISP_FLASH_MODE_FLASH, "Flash Mode flash") < 0)
+            return -1;
+        if (atomisp_set_attribute(main_fd, V4L2_CID_REQUEST_FLASH, numFrames, "Request Flash") < 0)
+            return -1;
+    } else {
+        if (atomisp_set_attribute(main_fd, V4L2_CID_FLASH_MODE, ATOMISP_FLASH_MODE_OFF, "Flash Mode flash") < 0)
+            return -1;
+    }
+    return 0;
+}
+
 /*
  **************************************************************************
  * FunctionName: init_camera_buffers;
@@ -817,7 +864,7 @@ static int v4l2_capture_s_format(int fd, int device, int w, int h, int fourcc, i
     v4l2_fmt.fmt.pix.height = h;
     v4l2_fmt.fmt.pix.pixelformat = fourcc;
     v4l2_fmt.fmt.pix.field = V4L2_FIELD_INTERLACED;
-    printf("fd: %d, VIDIOC_S_FMT: width: %d, height: %d, format: %d, field: %d\n",
+    printf("fd: %d, VIDIOC_S_FMT expect : width: %d, height: %d, format: %d, field: %d\n",
                 fd,
                 v4l2_fmt.fmt.pix.width,
                 v4l2_fmt.fmt.pix.height,
@@ -829,6 +876,12 @@ static int v4l2_capture_s_format(int fd, int device, int w, int h, int fourcc, i
         printf("fd: %d, VIDIOC_S_FMT failed: %s\n", fd, strerror(errno));
         return -1;
     }
+    printf("fd: %d, VIDIOC_S_FMT real: width: %d, height: %d, format: %d, field: %d\n",
+                fd,
+                v4l2_fmt.fmt.pix.width,
+                v4l2_fmt.fmt.pix.height,
+                v4l2_fmt.fmt.pix.pixelformat,
+                v4l2_fmt.fmt.pix.field);
 
     //get stride from ISP
     *stride = bytesPerLineToWidth(fourcc,v4l2_fmt.fmt.pix.bytesperline);
@@ -953,6 +1006,68 @@ static int frameSize(int format, int width, int height)
     
     return size;
 }  
+
+int v4l2_enum_framesize(int fd, int pixelformat)
+{
+    struct v4l2_frmsizeenum size;
+    int w, h;
+    int min_w, step_w, max_w, min_h, step_h, max_h;
+
+    memset (&size, 0, sizeof (struct v4l2_frmsizeenum));
+    size.index = 0;
+    size.pixel_format = pixelformat;
+    printf("framsizeenum.index = %d\n", size.index);
+    printf("framsizeenum.pixel_format= %d\n", size.pixel_format);
+
+    if (ioctl (fd, VIDIOC_ENUM_FRAMESIZES, &size) < 0)
+    {
+        printf("ioctl VIDIOC_ENUM_FRAMESIZES failed, %d %s\n", errno, strerror(errno));
+        return -1;
+    }
+
+    switch(size.type)
+    {
+        case V4L2_FRMSIZE_TYPE_DISCRETE:
+            printf("framesize type:V4L2_FRMSIZE_TYPE_DISCRETE\n");
+            w = size.discrete.width;
+            h = size.discrete.height;
+            break;
+        case V4L2_FRMSIZE_TYPE_STEPWISE:
+            printf("framesize type:V4L2_FRMSIZE_TYPE_STEPWISE\n");
+            printf("max_width=%d\n", size.stepwise.max_width);
+            printf("max_height=%d\n", size.stepwise.max_height);
+            printf("min_width=%d\n", size.stepwise.min_width);
+            printf("min_height=%d\n", size.stepwise.min_height);
+            printf("step_width=%d\n", size.stepwise.step_width);
+            printf("step_height=%d\n", size.stepwise.step_height);
+            break;
+        case V4L2_FRMSIZE_TYPE_CONTINUOUS:
+            printf("type:V4L2_FRMSIZE_TYPE_CONTINUOUS\n");
+            break;
+    }
+    return 0;
+}
+
+int v4l2_enum_frameinterval(int fd, int pixelformat, int width, int height)
+{
+    struct v4l2_frmivalenum ival;
+    int ret;
+    memset(&ival, 0, sizeof(struct v4l2_frmivalenum));
+    ival.index = 0;
+    ival.pixel_format = pixelformat;
+    ival.width = width;
+    ival.height = height;
+    ret = ioctl(fd, VIDIOC_ENUM_FRAMEINTERVALS, &ival);
+    if (fd < 0)
+    {
+        printf("ioctl enum enum_frameintervals_failed, %d %s \n", errno, strerror(errno));
+        return ret;
+    }
+
+    return 0;
+}
+
+
 
 /*
  **************************************************************************
@@ -1644,6 +1759,8 @@ static int start()
             status = -1;
             break;
     };      
+	if (flash_en)
+		setFlash(1);
             
     return status;
 }
@@ -1795,6 +1912,7 @@ static int stop()
         default:
             break;
     }; 
+	/* setFlash(0); */
 
     if (status == 0)
         mMode = CI_MODE_NONE;
@@ -2561,7 +2679,7 @@ int primary_snapshot_test()
     selectCameraSensor();
 
     initCameraParams();
-    
+
     ret = configure(CI_MODE_CONTINUOUS_CAPTURE);
     if(ret < 0)
     {
@@ -2569,7 +2687,14 @@ int primary_snapshot_test()
         closeDevice(V4L2_MAIN_DEVICE);
         return -1;
     }
-    
+/*
+  test use:framsize enum ioctl test
+*/
+    v4l2_enum_framesize(video_fds[V4L2_MAIN_DEVICE], snapshot.format);
+    v4l2_enum_framesize(video_fds[V4L2_PREVIEW_DEVICE], preview.format);
+    v4l2_enum_framesize(video_fds[V4L2_POSTVIEW_DEVICE], postview.format);
+
+    v4l2_enum_frameinterval(video_fds[V4L2_MAIN_DEVICE], snapshot.format, snapshot.width, snapshot.height);
     start();
     printf("start preview OK\n");
 
@@ -2751,7 +2876,7 @@ int main(int argc, char **argv)
     int c;
     TEST_TYPE test = UNKNOWN_TEST;
 
-    char * const short_options = "?crpdi:w:h:p:";
+    char * const short_options = "?crpdfi:w:h:p:";
     static struct option long_options[] = {
         {"capture", no_argument, 0, 'c'},
         {"record" , no_argument, 0, 'r'},
@@ -2759,6 +2884,7 @@ int main(int argc, char **argv)
         {"camera_id",  required_argument, 0, 'i'},
         {"width",  required_argument, 0, 'w'},
         {"height",  required_argument, 0, 'h'},
+        {"flash_en", no_argument, 0, 'f'},
         {0,                   0, 0, 0}
     };
 
@@ -2770,7 +2896,6 @@ int main(int argc, char **argv)
 
     while((c = getopt_long(argc, argv, short_options, long_options, &option_index)) != -1)
     {
-        
         switch (c) {
         case '?':	
             usage(argc, argv);
@@ -2790,6 +2915,11 @@ int main(int argc, char **argv)
             printf("preview test");
             test = PREVIEW_TEST;
             break;
+
+		case 'f':
+			printf("enable flash ");
+			flash_en = 1;
+			break;
 
         case 'd':	
             printf(" ,dump file enable,");
@@ -2821,7 +2951,8 @@ int main(int argc, char **argv)
     }
     printf("\n");
 
-    switch (test) {
+
+	switch(test) {
     case CAPTURE_TEST:	
         snapshot_test();
         break;
