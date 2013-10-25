@@ -515,7 +515,7 @@ static int v4l2_stream_off(int fd)
     enum v4l2_buf_type type;
 
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl (fd, VIDIOC_STREAMON, &type) < 0)
+    if (ioctl (fd, VIDIOC_STREAMOFF, &type) < 0)
     {
         printf("ioctl VIDIOC_STREAMOFF failed\n");
         return -1;
