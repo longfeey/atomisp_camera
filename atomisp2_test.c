@@ -37,19 +37,19 @@
 #define NUM_POSTVIEW_BUFFERS                1
 #define DEFAULT_PREVIEW_WIDTH               800
 #define DEFAULT_PREVIEW_HEIGHT              600
-#define DEFAULT_PREVIEW_FORMAT              V4L2_PIX_FMT_NV12
-#define DEFAULT_RECORDING_WIDTH             1920 
+#define DEFAULT_PREVIEW_FORMAT              V4L2_PIX_FMT_YUV420
+#define DEFAULT_RECORDING_WIDTH             1920
 #define DEFAULT_RECORDING_HEIGHT            1080
-#define DEFAULT_RECORDING_FORMAT            V4L2_PIX_FMT_NV12
+#define DEFAULT_RECORDING_FORMAT            V4L2_PIX_FMT_YUV420
 #define DEFAULT_PRIMARY_SNAPSHOT_WIDTH      3264
 #define DEFAULT_PRIMARY_SNAPSHOT_HEIGHT     2448
-#define DEFAULT_PRIMARY_SNAPSHOT_FORMAT     V4L2_PIX_FMT_NV12
+#define DEFAULT_PRIMARY_SNAPSHOT_FORMAT     V4L2_PIX_FMT_YUV420
 #define DEFAULT_SECONDARY_SNAPSHOT_WIDTH    1280
 #define DEFAULT_SECONDARY_SNAPSHOT_HEIGHT   720
-#define DEFAULT_SECONDARY_SNAPSHOT_FORMAT   V4L2_PIX_FMT_NV12
+#define DEFAULT_SECONDARY_SNAPSHOT_FORMAT   V4L2_PIX_FMT_YUV420
 #define DEFAULT_POSTVIEW_WIDTH              320
 #define DEFAULT_POSTVIEW_HEIGHT             240
-#define DEFAULT_POSTVIEW_FORMAT             V4L2_PIX_FMT_NV12
+#define DEFAULT_POSTVIEW_FORMAT             V4L2_PIX_FMT_YUV420
 #define DEFAULT_CAPTURE_FPS                 30
 #define BPP                                 2
 #define SKIP_FRAMES_OF_SECONDARY            4
@@ -75,6 +75,35 @@
 /* Set the flash mode (see enum atomisp_flash_mode) */
 #define V4L2_CID_FLASH_MODE                (V4L2_CID_CAMERA_LASTP1 + 10)
 
+#define V4L2_CID_FLASH_STROBE			(V4L2_CID_FLASH_CLASS_BASE + 3)
+
+
+
+#define V4L2_LOCK_FOCUS				(1 << 2)
+
+#define V4L2_CID_AUTO_FOCUS_START		(V4L2_CID_CAMERA_CLASS_BASE+28)
+#define V4L2_CID_AUTO_FOCUS_STOP		(V4L2_CID_CAMERA_CLASS_BASE+29)
+#define V4L2_CID_AUTO_FOCUS_STATUS		(V4L2_CID_CAMERA_CLASS_BASE+30)
+#define V4L2_AUTO_FOCUS_STATUS_IDLE		(0 << 0)
+#define V4L2_AUTO_FOCUS_STATUS_BUSY		(1 << 0)
+#define V4L2_AUTO_FOCUS_STATUS_REACHED		(1 << 1)
+#define V4L2_AUTO_FOCUS_STATUS_FAILED		(1 << 2)
+
+#define V4L2_CID_AUTO_FOCUS_RANGE		(V4L2_CID_CAMERA_CLASS_BASE+31)
+#define V4L2_CID_FOCUS_ABSOLUTE			(V4L2_CID_CAMERA_CLASS_BASE+10)
+#define V4L2_CID_FOCUS_RELATIVE			(V4L2_CID_CAMERA_CLASS_BASE+11)
+#define V4L2_CID_FOCUS_AUTO			(V4L2_CID_CAMERA_CLASS_BASE+12)
+
+/* Query Focus Status */
+#define V4L2_CID_FOCUS_STATUS              (V4L2_CID_CAMERA_LASTP1 + 14)
+
+enum v4l2_auto_focus_range {
+	V4L2_AUTO_FOCUS_RANGE_AUTO		= 0,
+	V4L2_AUTO_FOCUS_RANGE_NORMAL		= 1,
+	V4L2_AUTO_FOCUS_RANGE_MACRO		= 2,
+	V4L2_AUTO_FOCUS_RANGE_INFINITY		= 3,
+};
+
 /* Flash modes. Default is off.
  * Setting a flash to TORCH or INDICATOR mode will automatically
  * turn it on. Setting it to FLASH mode will not turn on the flash
@@ -90,13 +119,13 @@ enum atomisp_flash_mode {
 /************************************************************************************/
 enum SensorID
 {
-    V4L2_SENSOR_PRIMARY,    
+    V4L2_SENSOR_PRIMARY,
     V4L2_SENSOR_SECONDARY,
 };
 
 /*ISP binary running mode*/
 enum AtomIspMode
-{ 
+{
     CI_MODE_PREVIEW             = 0x8000,
     CI_MODE_VIDEO               = 0x4000,
     CI_MODE_CAPTURE             = 0x2000,
@@ -104,7 +133,7 @@ enum AtomIspMode
     CI_MODE_NONE                = 0x0000,
 };
 
-enum CameraDevice 
+enum CameraDevice
 {
     V4L2_MAIN_DEVICE       = 0,
     V4L2_POSTVIEW_DEVICE   = 1,
@@ -113,7 +142,7 @@ enum CameraDevice
     V4L2_ISP_SUBDEV        = 4,
 };
 
-enum DeviceState 
+enum DeviceState
 {
     DEVICE_CLOSED = 0,  /*!< kernel device closed */
     DEVICE_OPEN,        /*!< device node opened */
@@ -146,7 +175,7 @@ struct camera_buffer
     int     buffer_type;
 };
 
-struct FrameInfo 
+struct FrameInfo
 {
     int format;     // V4L2 format
     int width;      // Frame width
@@ -159,7 +188,7 @@ struct FrameInfo
 
 struct atomisp_exposure {
     unsigned int integration_time[8];
-    unsigned int shutter_speed[8]; 
+    unsigned int shutter_speed[8];
     unsigned int gain[4];
     unsigned int aperture;
 };
@@ -195,10 +224,21 @@ static int g_width, g_height;
 static int dump = 0;
 static pthread_t preview_thread_id;
 static pthread_t snapshot_thread_id;
-static int flash_en = 0; /* if enable camera flash */
+
+/* if enable camera flash */
+static int flash_en = 0;
+static int flash_torch = 0;
+static int flash_indicator = 0;
+static int focus_en = 0;
+
+/* flash default touch intensity */
+static int torch_intensity = 80;
+static int indicator_intensity = 100;
+static int vflip_enable = 0;
+static int hflip_enable = 0;
 
  /* if video recording resolution smaller then the preview resolution,
-  * we will swap the preview device and the video record device 
+  * we will swap the preview device and the video record device
   */
 static int device_swap = 0;
 
@@ -266,24 +306,39 @@ void dump_camera_buffer(struct camera_buffer *buf)
 static int time_subtract(struct timeval *result, struct timeval *x, struct timeval *y)
 {
     int nsec;
-    
+
     if ( x->tv_sec > y->tv_sec )
         return -1;
-    
+
     if ((x->tv_sec==y->tv_sec) && (x->tv_usec>y->tv_usec))
         return -1;
-    
+
     result->tv_sec = ( y->tv_sec-x->tv_sec );
     result->tv_usec = ( y->tv_usec-x->tv_usec );
-    
+
     if (result->tv_usec<0)
     {
         result->tv_sec--;
         result->tv_usec+=1000000;
     }
-    
+
     return 0;
 }
+
+void spare_time(struct timeval *start, char *msg)
+{
+	struct timeval diff, cur;
+	if (start == NULL || msg == NULL)
+	{
+		printf("error: invalid argument\n");
+		return;
+	}
+	gettimeofday(&cur, NULL);
+	time_subtract(&diff, start, &cur);
+	printf("time: %s spare time %lu.%lu\n", msg, diff.tv_sec, diff.tv_usec);
+	gettimeofday(start, NULL);
+}
+
 
 /*
  **************************************************************************
@@ -311,7 +366,7 @@ static int v4l2_capture_open(int device)
     {
         printf("device is V4L2_ISP_SUBDEV\n");
     }
-    else 
+    else
     {
         dev_name = dev_name_array[device];
     }
@@ -416,7 +471,7 @@ static void closeDevice(int device)
     {
         printf("Device %d already closed. Do nothing\n", device);
         return;
-    }  
+    }
 
     v4l2_capture_close(video_fds[device]);
 
@@ -437,7 +492,7 @@ static void closeDevice(int device)
 static int v4l2_queue_buffer(int fd, int index)
 {
     struct v4l2_buffer buf;
-    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE; 
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     buf.memory = V4L2_MEMORY_MMAP;
     buf.index = index;
 
@@ -466,7 +521,7 @@ static int v4l2_dequeue_buffer(int fd)
     memset(&v4l2_buffer, 0, sizeof(v4l2_buffer));
     v4l2_buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     v4l2_buffer.memory = V4L2_MEMORY_MMAP;
-    
+
     if (ioctl (fd, VIDIOC_DQBUF, &v4l2_buffer) < 0)
     {
         printf("ioctl VIDIOC_DQBUF failed\n");
@@ -524,6 +579,90 @@ static int v4l2_stream_off(int fd)
     return 0;
 }
 
+int sensorMoveFocusToPosition(int position)
+{
+    return atomisp_set_attribute(main_fd, V4L2_CID_FOCUS_ABSOLUTE, position, "Set focus position");
+}
+
+int getFocusPosition(int *position)
+{
+    return atomisp_get_attribute(main_fd,V4L2_CID_FOCUS_ABSOLUTE, position);
+}
+
+int sensorMoveFocusToBySteps(int steps)
+{
+    return atomisp_set_attribute(main_fd, V4L2_CID_FOCUS_RELATIVE, steps, "Set focus steps");
+}
+
+int sensorGetFocusStatus(int *status)
+{
+    return atomisp_get_attribute(main_fd,V4L2_CID_FOCUS_STATUS, status);
+}
+
+/* manual focus test */
+int focus_test()
+{
+	int status;
+	int i;
+	int position;
+	for (i = 100; i < 10000;)
+	{
+		sensorMoveFocusToPosition(i);
+		getFocusPosition(&position);
+		sensorGetFocusStatus(&status);
+		i += 100;
+		printf("Foucus current position=%d, status=0x%x\n",position, status);
+	}
+}
+
+int setFlashIndicator(int intensity)
+{
+	printf("@%s: intensity = %d", __FUNCTION__, intensity);
+    if (mCameraID != V4L2_SENSOR_PRIMARY) {
+        printf("Indicator intensity is supported only for primary camera!");
+        return -1;
+    }
+
+    if (intensity) {
+        if (atomisp_set_attribute(main_fd, V4L2_CID_FLASH_INDICATOR_INTENSITY, intensity, "Indicator Intensity") < 0)
+            return -1;
+        if (atomisp_set_attribute(main_fd, V4L2_CID_FLASH_MODE, ATOMISP_FLASH_MODE_INDICATOR, "Flash Mode") < 0)
+            return -1;
+    } else {
+        if (atomisp_set_attribute(main_fd, V4L2_CID_FLASH_MODE, ATOMISP_FLASH_MODE_OFF, "Flash Mode") < 0)
+            return -1;
+    }
+    return 0;
+}
+
+int setTorchHelper(int intensity)
+{
+    if (intensity) {
+        if (atomisp_set_attribute(main_fd, V4L2_CID_FLASH_TORCH_INTENSITY, intensity, "Torch Intensity") < 0)
+            return -1;
+        if (atomisp_set_attribute(main_fd, V4L2_CID_FLASH_MODE, ATOMISP_FLASH_MODE_TORCH, "Flash Mode") < 0)
+            return -1;
+    } else {
+        if (atomisp_set_attribute(main_fd, V4L2_CID_FLASH_MODE, ATOMISP_FLASH_MODE_OFF, "Flash Mode") < 0)
+            return -1;
+    }
+    return 0;
+}
+
+int setTorch(int intensity)
+{
+    printf("@%s: intensity = %d", __FUNCTION__, intensity);
+
+    if (mCameraID != V4L2_SENSOR_PRIMARY) {
+        printf("Indicator intensity is supported only for primary camera!");
+        return -1;
+    }
+
+    setTorchHelper(intensity);
+
+    return 0;
+}
+
 static int setFlash(int numFrames)
 {
     printf("@%s: numFrames = %d", __FUNCTION__, numFrames);
@@ -534,13 +673,39 @@ static int setFlash(int numFrames)
     if (numFrames) {
         if (atomisp_set_attribute(main_fd, V4L2_CID_FLASH_MODE, ATOMISP_FLASH_MODE_FLASH, "Flash Mode flash") < 0)
             return -1;
-        if (atomisp_set_attribute(main_fd, V4L2_CID_REQUEST_FLASH, numFrames, "Request Flash") < 0)
-            return -1;
+		if (atomisp_set_attribute(main_fd, V4L2_CID_REQUEST_FLASH, numFrames, "Request Flash") < 0)
+			return -1;
     } else {
         if (atomisp_set_attribute(main_fd, V4L2_CID_FLASH_MODE, ATOMISP_FLASH_MODE_OFF, "Flash Mode flash") < 0)
             return -1;
     }
     return 0;
+}
+
+static int set_vflip(int fd, int value)
+{
+	int vflip = 0;
+	if (atomisp_set_attribute(fd, V4L2_CID_VFLIP, value, "set vflip") < 0)
+		return -1;
+
+	if (atomisp_get_attribute(fd, V4L2_CID_VFLIP, &vflip) < 0)
+		return -1;
+	printf("vflip value=%d\n", vflip);
+
+	return 0;
+}
+
+static int set_hflip(int fd, int value)
+{
+	int hflip;
+	if (atomisp_set_attribute(fd, V4L2_CID_HFLIP, value, "set hflip") < 0)
+		return -1;
+
+	if (atomisp_get_attribute(fd, V4L2_CID_HFLIP, &hflip) < 0)
+		return -1;
+	printf("hflip value=%d\n", hflip);
+
+	return 0;
 }
 
 /*
@@ -562,28 +727,28 @@ static int init_camera_buffers(struct camera_buffer *buffer, int buffer_type)
             memset(buffer, 0x00, sizeof(struct camera_buffer) * NUM_PREVIEW_BUFFERS);
             for(i=0; i<NUM_PREVIEW_BUFFERS; i++)
             {
-                buffer[i].buffer_type = buffer_type;    
+                buffer[i].buffer_type = buffer_type;
             }
             break;
         case BUFFER_TYPE_SNAPSHOT:
             memset(buffer, 0x00, sizeof(struct camera_buffer) * NUM_SNAPSHOT_BUFFERS);
             for(i=0; i<NUM_SNAPSHOT_BUFFERS; i++)
             {
-                buffer[i].buffer_type = buffer_type;    
+                buffer[i].buffer_type = buffer_type;
             }
             break;
         case BUFFER_TYPE_POSTVIEW:
             memset(buffer, 0x00, sizeof(struct camera_buffer) * NUM_POSTVIEW_BUFFERS);
             for(i=0; i<NUM_POSTVIEW_BUFFERS; i++)
             {
-                buffer[i].buffer_type = buffer_type;    
+                buffer[i].buffer_type = buffer_type;
             }
             break;
         case BUFFER_TYPE_RECORDING:
             memset(buffer, 0x00, sizeof(struct camera_buffer) * NUM_RECORDING_BUFFERS);
             for(i=0; i<NUM_RECORDING_BUFFERS; i++)
             {
-                buffer[i].buffer_type = buffer_type;    
+                buffer[i].buffer_type = buffer_type;
             }
             break;
         default:
@@ -734,7 +899,7 @@ static int selectCameraSensor()
 static int atomisp_set_capture_mode(int deviceMode)
 {
     struct v4l2_streamparm parm;
-    
+
     switch (deviceMode)
     {
         case CI_MODE_PREVIEW:
@@ -775,7 +940,7 @@ static int atomisp_set_capture_fps(int fps)
 {
     struct v4l2_streamparm parm;
     CLEAR(parm);
-    
+
     parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     parm.parm.capture.timeperframe.numerator = fps;
     parm.parm.capture.timeperframe.denominator = 1;
@@ -871,7 +1036,7 @@ static int v4l2_capture_s_format(int fd, int device, int w, int h, int fourcc, i
                 v4l2_fmt.fmt.pix.pixelformat,
                 v4l2_fmt.fmt.pix.field);
     ret = ioctl(fd, VIDIOC_S_FMT, &v4l2_fmt);
-    if (ret < 0) 
+    if (ret < 0)
     {
         printf("fd: %d, VIDIOC_S_FMT failed: %s\n", fd, strerror(errno));
         return -1;
@@ -886,11 +1051,11 @@ static int v4l2_capture_s_format(int fd, int device, int w, int h, int fourcc, i
     //get stride from ISP
     *stride = bytesPerLineToWidth(fourcc,v4l2_fmt.fmt.pix.bytesperline);
     printf("stride: %d from ISP\n", *stride);
-    
+
     CLEAR(v4l2_fmt);
     v4l2_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ret = ioctl (fd,  VIDIOC_G_FMT, &v4l2_fmt);
-    if (ret < 0) 
+    if (ret < 0)
     {
         printf("fd:%d, VIDIOC_G_FMT failed: %s\n", fd, strerror(errno));
         return -1;
@@ -951,7 +1116,7 @@ static int configureDevice(int device, int deviceMode,struct FrameInfo *fInfo, i
     ret = atomisp_set_capture_mode(deviceMode);
     if (ret < 0)
         return ret;
- 
+
     //Set the format
     ret = v4l2_capture_s_format(fd, device, w, h, format, raw, &(fInfo->stride));
     if (ret < 0)
@@ -980,7 +1145,7 @@ static int configureDevice(int device, int deviceMode,struct FrameInfo *fInfo, i
  **************************************************************************
  */
 static int frameSize(int format, int width, int height)
-{   
+{
     int size = 0;
     switch (format)
     {
@@ -1003,9 +1168,9 @@ static int frameSize(int format, int width, int height)
         default:
             size = (width * height * 2);
     }
-    
+
     return size;
-}  
+}
 
 int v4l2_enum_framesize(int fd, int pixelformat)
 {
@@ -1120,13 +1285,13 @@ static int sensorSetExposure(struct atomisp_exposure *exposure)
  */
 static int updateCameraParams()
 {
-    if(mCameraID == V4L2_SENSOR_PRIMARY) 
-    { 
+    if(mCameraID == V4L2_SENSOR_PRIMARY)
+    {
         struct atomisp_exposure exposure;
         CLEAR(exposure);
         exposure.integration_time[0]=593;
         exposure.gain[0]=16;
-        exposure.gain[1]=1024; 
+        exposure.gain[1]=1024;
 
         int ret = sensorSetExposure(&exposure);
         if(ret < 0)
@@ -1163,11 +1328,11 @@ static int configurePreview()
     ret = configureDevice(V4L2_PREVIEW_DEVICE,CI_MODE_PREVIEW,&preview, 0);
     if(ret < 0)
     {
-        printf("configureDevice failed\n");    
+        printf("configureDevice failed\n");
     }
 
     return ret;
- 
+
 }
 
 /*
@@ -1183,9 +1348,9 @@ static int configurePreview()
 static int configureCapture()
 {
     int ret;
-    
+
     ret = configureDevice(V4L2_MAIN_DEVICE, CI_MODE_CAPTURE, &snapshot, 0);
-    if (ret < 0) 
+    if (ret < 0)
     {
         printf("configure first device failed!");
         return ret;;
@@ -1207,7 +1372,7 @@ static int configureCapture()
     }
 
     return 0;
-} 
+}
 
 /*
  **************************************************************************
@@ -1237,7 +1402,43 @@ int requestContCapture(int numCaptures, int offset, unsigned int skip)
     }
 
     return 0;
-    
+
+}
+
+/**
+ * atomisp_get_attribute():
+ * Try to get the value of one specific attribute
+ * return value: 0 for success
+ *               others are errors
+ */
+int atomisp_get_attribute (int fd, int attribute_num, int *value)
+{
+    struct v4l2_control control;
+    struct v4l2_ext_controls controls;
+    struct v4l2_ext_control ext_control;
+
+    if (fd < 0)
+        return -1;
+
+    control.id = attribute_num;
+    controls.ctrl_class = V4L2_CTRL_ID2CLASS(control.id);
+    controls.count = 1;
+    controls.controls = &ext_control;
+    ext_control.id = attribute_num;
+
+    if (ioctl(fd, VIDIOC_G_EXT_CTRLS, &controls) == 0) {
+        *value = ext_control.value;
+		return 0;
+    }
+
+    if (ioctl(fd, VIDIOC_G_CTRL, &control) == 0) {
+        *value = control.value;
+        return 0;
+    }
+
+    printf("Failed to get value for control (%d) on device '%d', %s\n.",
+          attribute_num, fd, strerror(errno));
+    return -1;
 }
 
 /*
@@ -1257,7 +1458,7 @@ int atomisp_set_attribute (int fd, int attribute_num,
     struct v4l2_ext_controls controls;
     struct v4l2_ext_control ext_control;
 
-    printf("setting attribute [%s] to %d\n", name, value);
+    printf("setting attribute [%s]%d to %d\n", name, attribute_num, value);
 
     if (fd < 0)
         return -1;
@@ -1324,7 +1525,7 @@ int configureContinuous()
         printf("configure second device failed!\n");
         return ret;
     }
-    
+
     return ret;
 }
 
@@ -1488,7 +1689,7 @@ static int prepareDevice(int device, int buffer_count)
             printf("mmap failed: %s\n", strerror(errno));
             return -1;
         }
- 
+
         if(device == V4L2_PREVIEW_DEVICE)
         {
             previewBuf[vbuf.index].index = vbuf.index;
@@ -1543,7 +1744,7 @@ static int activateBufferPool(int device, int buffer_count)
 {
     int fd = video_fds[device];
     int ret;
- 
+
     int index;
     for(index = 0; index<buffer_count; index++)
     {
@@ -1586,7 +1787,7 @@ static int startDevice(int device, int buffer_count)
 
     //Qbuf
     ret = activateBufferPool(device, buffer_count);
-    if (ret < 0) 
+    if (ret < 0)
     {
         printf("activateBufferPool failed\n");
         return ret;
@@ -1620,15 +1821,15 @@ static int startDevice(int device, int buffer_count)
  **************************************************************************
  */
 static int startPreview()
-{       
-    int ret = 0; 
+{
+    int ret = 0;
     ret = startDevice(V4L2_PREVIEW_DEVICE, NUM_PREVIEW_BUFFERS);
     if (ret < 0)
     {
         printf("Start preview device failed!\n");
         return -1;
-    }       
-    
+    }
+
     return 0;
 }
 
@@ -1686,7 +1887,7 @@ int startContinuousPreview()
         printf("prepareDevice failed\n");
         return -1;
     }
-    
+
     status = startPreview();
     if (status < 0)
     {
@@ -1710,9 +1911,9 @@ int startContinuousPreview()
 int startRecording()
 {
     int ret = 0;
-    
+
     ret = startDevice(V4L2_MAIN_DEVICE, NUM_RECORDING_BUFFERS);
-    if (ret < 0) 
+    if (ret < 0)
     {
         printf("Start recording device failed\n");
         return -1;
@@ -1740,7 +1941,8 @@ int startRecording()
  */
 static int start()
 {
-    int status = 0; 
+    int status = 0;
+
     switch (mMode)
     {
         case CI_MODE_PREVIEW:
@@ -1751,17 +1953,45 @@ static int start()
             break;
         case CI_MODE_CAPTURE:
             status = startCapture();
-            break; 
+            break;
         case CI_MODE_CONTINUOUS_CAPTURE:
             status = startContinuousPreview();
             break;
         default:
             status = -1;
             break;
-    };      
+    };
+
+	/* test use start */
+	set_hflip(main_fd, 0);
+
+	if (video_fds[V4L2_POSTVIEW_DEVICE] > 0)
+		set_hflip(video_fds[V4L2_POSTVIEW_DEVICE], 1);
+	if (video_fds[V4L2_PREVIEW_DEVICE] > 0)
+		set_hflip(video_fds[V4L2_PREVIEW_DEVICE], 1);
+	/* test use end */
+
+	if (vflip_enable)
+		set_vflip(main_fd, vflip_enable);
+
+	if (hflip_enable)
+		set_hflip(main_fd, hflip_enable);
+
+	if (flash_indicator)
+		setFlashIndicator(indicator_intensity);
+
 	if (flash_en)
 		setFlash(1);
-            
+
+	if (flash_torch)
+	{
+		setTorch(torch_intensity);
+		sleep(5);
+		setTorch(0);
+	}
+
+	if (focus_en)
+		focus_test();
     return status;
 }
 
@@ -1779,7 +2009,7 @@ int stopDevice(int device)
 {
     int fd = video_fds[device];
 
-    if (fd >= 0 && mDevices[device].state == DEVICE_STARTED) 
+    if (fd >= 0 && mDevices[device].state == DEVICE_STARTED)
     {
         //stream off
         v4l2_stream_off(fd);
@@ -1800,9 +2030,9 @@ int stopDevice(int device)
  **************************************************************************
  */
 static int stopPreview()
-{       
+{
     stopDevice(V4L2_PREVIEW_DEVICE);
-    
+
     closeDevice(V4L2_PREVIEW_DEVICE);
     mDevices[V4L2_PREVIEW_DEVICE].state = DEVICE_CLOSED;
 
@@ -1869,9 +2099,9 @@ int stopContinuousPreview()
 static int stopRecording()
 {
     stopDevice(V4L2_PREVIEW_DEVICE);
-    
+
     stopDevice(V4L2_MAIN_DEVICE);
-    
+
     closeDevice(V4L2_PREVIEW_DEVICE);
     mDevices[V4L2_PREVIEW_DEVICE].state = DEVICE_CLOSED;
 
@@ -1894,24 +2124,24 @@ static int stop()
     switch (mMode)
     {
         case CI_MODE_PREVIEW:
-            status = stopPreview();        
+            status = stopPreview();
             break;
 
         case CI_MODE_VIDEO:
-            status = stopRecording();      
+            status = stopRecording();
             break;
 
         case CI_MODE_CAPTURE:
-            status = stopCapture();        
+            status = stopCapture();
             break;
 
-        case CI_MODE_CONTINUOUS_CAPTURE:  
+        case CI_MODE_CONTINUOUS_CAPTURE:
             status = stopContinuousPreview();
             break;
 
         default:
             break;
-    }; 
+    };
 	/* setFlash(0); */
 
     if (status == 0)
@@ -1937,7 +2167,7 @@ static int initCameraParams()
     preview.format = DEFAULT_PREVIEW_FORMAT;
     preview.stride = DEFAULT_PREVIEW_WIDTH;
     preview.size   = frameSize(preview.format, preview.stride, preview.height);
- 
+
     recording.width  = g_width;
     recording.height = g_height;
     recording.format = DEFAULT_RECORDING_FORMAT;
@@ -1966,7 +2196,7 @@ static int initCameraParams()
     postview.format = DEFAULT_POSTVIEW_FORMAT;
     postview.stride = DEFAULT_POSTVIEW_WIDTH;
     postview.size = frameSize(postview.format, postview.stride, postview.height);
-    
+
     previewBuf = (struct camera_buffer *)malloc(sizeof(struct camera_buffer) * NUM_PREVIEW_BUFFERS);
     if(previewBuf == NULL)
     {
@@ -1975,7 +2205,7 @@ static int initCameraParams()
     }
 
     init_camera_buffers(previewBuf, BUFFER_TYPE_PREVIEW);
-    
+
     snapshotBuf = (struct camera_buffer *)malloc(sizeof(struct camera_buffer) * NUM_SNAPSHOT_BUFFERS);
     if(snapshotBuf == NULL)
     {
@@ -1983,7 +2213,7 @@ static int initCameraParams()
         return -1;
     }
 
-    init_camera_buffers(snapshotBuf, BUFFER_TYPE_SNAPSHOT);    
+    init_camera_buffers(snapshotBuf, BUFFER_TYPE_SNAPSHOT);
 
     postviewBuf = (struct camera_buffer *)malloc(sizeof(struct camera_buffer) * NUM_POSTVIEW_BUFFERS);
     if(postviewBuf == NULL)
@@ -1993,7 +2223,7 @@ static int initCameraParams()
     }
 
     init_camera_buffers(postviewBuf, BUFFER_TYPE_POSTVIEW);
-    
+
     recordingBuf = (struct camera_buffer *)malloc(sizeof(struct camera_buffer) * NUM_RECORDING_BUFFERS);
     if(recordingBuf == NULL)
     {
@@ -2022,7 +2252,7 @@ static int deinitCameraParams()
     memset(&postview, 0x00, sizeof(struct FrameInfo));
     memset(&snapshot, 0x00, sizeof(struct FrameInfo));
     memset(&recording, 0x00, sizeof(struct FrameInfo));
-    
+
     deinit_camera_buffers(previewBuf, BUFFER_TYPE_PREVIEW);
     if(previewBuf != NULL)
     {
@@ -2030,7 +2260,7 @@ static int deinitCameraParams()
         previewBuf = NULL;
         closeDevice(V4L2_PREVIEW_DEVICE);
     }
-    
+
     deinit_camera_buffers(snapshotBuf, BUFFER_TYPE_SNAPSHOT);
     if(snapshotBuf != NULL)
     {
@@ -2038,7 +2268,7 @@ static int deinitCameraParams()
         snapshotBuf = NULL;
         closeDevice(V4L2_MAIN_DEVICE);
     }
-    
+
     deinit_camera_buffers(postviewBuf, BUFFER_TYPE_POSTVIEW);
     if(postviewBuf != NULL)
     {
@@ -2077,7 +2307,7 @@ static int preview_test()
     int preview_fps = 0;
     int update_time = 1;
     struct timeval start_time, stop_time, diff;
- 
+
     printf("%s++\n",__func__);
     for(i = 0; i < V4L2_MAX_DEVICE_COUNT; i++)
     {
@@ -2095,7 +2325,7 @@ static int preview_test()
     selectCameraSensor();
 
     initCameraParams();
- 
+
     ret = configure(CI_MODE_PREVIEW);
     if(ret < 0)
     {
@@ -2103,7 +2333,7 @@ static int preview_test()
         closeDevice(V4L2_MAIN_DEVICE);
         return -1;
     }
- 
+
     start();
     printf("start preview OK\n");
 
@@ -2162,7 +2392,7 @@ static int preview_test()
 
     deinitCameraParams();
     printf("%s--\n\n",__func__);
-    
+
     return 0;
 }
 
@@ -2185,7 +2415,7 @@ static int preview_test2()
     int preview_fps = 0;
     int update_time = 1;
     struct timeval start_time, stop_time, diff;
- 
+
     printf("%s++\n",__func__);
     for(i = 0; i < V4L2_MAX_DEVICE_COUNT; i++)
     {
@@ -2203,7 +2433,7 @@ static int preview_test2()
     selectCameraSensor();
 
     initCameraParams();
-    
+
     ret = configure(CI_MODE_CONTINUOUS_CAPTURE);
     if(ret < 0)
     {
@@ -2211,7 +2441,7 @@ static int preview_test2()
         closeDevice(V4L2_MAIN_DEVICE);
         return -1;
     }
-    
+
     start();
     printf("start preview OK\n");
 
@@ -2256,7 +2486,7 @@ static int preview_test2()
         v4l2_queue_buffer(video_fds[V4L2_PREVIEW_DEVICE], index);
         gettimeofday(&stop_time,0);
         time_subtract(&diff,&start_time,&stop_time);
-        
+
         if(diff.tv_sec == 1)
         {
             update_time = 1;
@@ -2270,7 +2500,7 @@ static int preview_test2()
 
     deinitCameraParams();
     printf("%s--\n\n",__func__);
-    
+
     return 0;
 }
 
@@ -2295,7 +2525,7 @@ static int recording_test()
     int record_resolution_size;
     int preview_resolution_size;
     struct timeval start_time, stop_time, diff;
- 
+
     printf("%s++\n",__func__);
     for(i = 0; i < V4L2_MAX_DEVICE_COUNT; i++)
     {
@@ -2303,7 +2533,7 @@ static int recording_test()
         mDevices[i].state = DEVICE_CLOSED;
     }
     record_resolution_size = g_width * g_height;
-    preview_resolution_size = DEFAULT_PREVIEW_WIDTH * DEFAULT_PREVIEW_HEIGHT; 
+    preview_resolution_size = DEFAULT_PREVIEW_WIDTH * DEFAULT_PREVIEW_HEIGHT;
 
     /* video record resolution must bigger then preview resolution */
     if (preview_resolution_size > record_resolution_size)
@@ -2317,7 +2547,7 @@ static int recording_test()
         printf("V4L2_INJECT_DEVICE:%s\n", dev_name_array[V4L2_INJECT_DEVICE]);
         device_swap = 1;
     }
- 
+
     int ret = openDevice(V4L2_MAIN_DEVICE);
     if (ret < 0)
     {
@@ -2336,7 +2566,7 @@ static int recording_test()
         closeDevice(V4L2_MAIN_DEVICE);
         return -1;
     }
- 
+
     start();
     printf("start recording OK\n");
 
@@ -2390,7 +2620,7 @@ static int recording_test()
         v4l2_queue_buffer(video_fds[V4L2_MAIN_DEVICE], index);
         gettimeofday(&stop_time,0);
         time_subtract(&diff,&start_time,&stop_time);
- 
+
         if(diff.tv_sec == 1)
         {
             update_time = 1;
@@ -2404,7 +2634,7 @@ static int recording_test()
 
     deinitCameraParams();
     printf("%s--\n\n",__func__);
-    
+
     return 0;
 }
 
@@ -2442,14 +2672,14 @@ int v4l2_poll(int device, int timeout)
     return poll(&pfd, 1, timeout);
 }
 
-/**         
+/**
  * Polls the preview device node fd for data
- *          
+ *
  * \param timeout time to wait for data (in ms), timeout of -1
  *        means to wait indefinitely for data
  * \return -1 for error, 0 if time out, positive number
  *         if poll was successful
- */ 
+ */
 /*
  **************************************************************************
  * FunctionName: pollCapture;
@@ -2467,12 +2697,12 @@ int pollCapture(int timeout)
 
 /**
  * Polls the preview device node fd for data
- *      
+ *
  * \param timeout time to wait for data (in ms), timeout of -1
  *        means to wait indefinitely for data
  * \return -1 for error, 0 if time out, positive number
  *         if poll was successful
- */     
+ */
 /*
  **************************************************************************
  * FunctionName: pollPreview;
@@ -2484,9 +2714,9 @@ int pollCapture(int timeout)
  **************************************************************************
  */
 int pollPreview(int timeout)
-{           
+{
     return v4l2_poll(V4L2_PREVIEW_DEVICE, timeout);
-} 
+}
 
 /*
  **************************************************************************
@@ -2570,7 +2800,7 @@ void *preview_thread()
         v4l2_queue_buffer(video_fds[V4L2_PREVIEW_DEVICE], index);
         gettimeofday(&stop_time,0);
         time_subtract(&diff,&start_time,&stop_time);
-        
+
         if(diff.tv_sec == 1)
         {
             update_time = 1;
@@ -2599,7 +2829,7 @@ void *snapshot_thread()
     int loop = 0;
     int ret = 0;
     char filename[64];
-    
+
 	printf("%s++\n",__func__);
     printf("enter snapshot thread\n");
     startCapture();
@@ -2736,7 +2966,7 @@ int secondary_snapshot_test()
     }
 
     record_resolution_size = g_width * g_height;
-    preview_resolution_size = DEFAULT_PREVIEW_WIDTH * DEFAULT_PREVIEW_HEIGHT; 
+    preview_resolution_size = DEFAULT_PREVIEW_WIDTH * DEFAULT_PREVIEW_HEIGHT;
 
     if (preview_resolution_size > record_resolution_size)
     {
@@ -2775,7 +3005,7 @@ int secondary_snapshot_test()
     snapshotBuf = recordingBuf;
     memset((void *)(&snapshot), 0, sizeof(struct FrameInfo));
     memcpy((void *)(&snapshot), (void *)(&recording), sizeof(struct FrameInfo));
- 
+
     sprintf(filename, "%s_snapshot_%dx%d.yuv", mCameraID ? "secondCamera" : "primaryCamera", snapshot.width, snapshot.height);
     while(loop < SKIP_FRAMES_OF_SECONDARY)
     {
@@ -2819,7 +3049,7 @@ int secondary_snapshot_test()
 
     deinitCameraParams();
     printf("%s--\n\n",__func__);
-    
+
     return 0;
 }
 
@@ -2853,8 +3083,12 @@ void usage(int argc, char * argv[])
     printf("-p, --preview \n\tpreiew test\n");
     printf("-d, --dump \n\tdump file when viedo record\n");
     printf("-i, --camera_id \n\tchoise which camera will be test\n");
-    printf("\t0: the second camera will be use\n");
-    printf("\t1: the primary camera will be use\n");
+    printf("\t0: the primary camera will be use\n");
+    printf("\t1: the second camera will be use\n");
+    printf("-f, --flash_en\n\tenable flash\n");
+    printf("-I, --flash_indicator\n\tenable flash indicator\n");
+    printf("-t, --flash_torch\n\tenable flash torch\n");
+    printf("-F, --focus\n\tenable focus test\n");
     printf("-w, --width \n\tset width of the resolution\n");
     printf("-h, --height \n\tset height of the resolution\n");
 }
@@ -2876,7 +3110,7 @@ int main(int argc, char **argv)
     int c;
     TEST_TYPE test = UNKNOWN_TEST;
 
-    char * const short_options = "?crpdfi:w:h:p:";
+    char * const short_options = "?crpdfVHI:t:Fi:w:h:p:";
     static struct option long_options[] = {
         {"capture", no_argument, 0, 'c'},
         {"record" , no_argument, 0, 'r'},
@@ -2885,6 +3119,11 @@ int main(int argc, char **argv)
         {"width",  required_argument, 0, 'w'},
         {"height",  required_argument, 0, 'h'},
         {"flash_en", no_argument, 0, 'f'},
+        {"flash_torch", optional_argument, 0, 't'},
+        {"flash_indicator", optional_argument, 0, 'I'},
+        {"focus", no_argument, 0, 'F'},
+        {"vflip", no_argument, 0, 'V'},
+        {"hflip", no_argument, 0, 'H'},
         {0,                   0, 0, 0}
     };
 
@@ -2897,21 +3136,21 @@ int main(int argc, char **argv)
     while((c = getopt_long(argc, argv, short_options, long_options, &option_index)) != -1)
     {
         switch (c) {
-        case '?':	
+        case '?':
             usage(argc, argv);
             break;
 
-        case 'c':	
+        case 'c':
             printf("capture test");
             test = CAPTURE_TEST;
             break;
 
-        case 'r':	
+        case 'r':
             printf("video record test");
             test = VIDEO_RECORD_TEST;
             break;
 
-        case 'p':	
+        case 'p':
             printf("preview test");
             test = PREVIEW_TEST;
             break;
@@ -2921,12 +3160,47 @@ int main(int argc, char **argv)
 			flash_en = 1;
 			break;
 
-        case 'd':	
+		case 't':
+			printf("enable torch flash test ");
+			flash_torch = 1;
+			if (atoi(optarg))
+			{
+				torch_intensity = atoi(optarg);
+				printf("torch flash intensity is %d", torch_intensity);
+			}
+			break;
+
+		case 'F':
+			printf("enable focus test ");
+			focus_en = 1;
+			break;
+
+		case 'V':
+			printf("enable vflip");
+			vflip_enable = 1;
+			break;
+
+		case 'H':
+			printf("enable hflip");
+			hflip_enable = 1;
+			break;
+
+		case 'I':
+			printf("enable indicator flash test\n");
+			flash_indicator = 1;
+			if (atoi(optarg))
+			{
+				indicator_intensity = atoi(optarg);
+				printf("indicator flash intensity is %d ", indicator_intensity);
+			}
+			break;
+
+        case 'd':
             printf(" ,dump file enable,");
             dump = 1;
             break;
 
-        case 'i':	
+        case 'i':
             if (atoi(optarg))
                 mCameraID = V4L2_SENSOR_SECONDARY;
             else
@@ -2934,17 +3208,17 @@ int main(int argc, char **argv)
             printf("%s camera ", mCameraID ? "second" : "primary");
             break;
 
-        case 'w':	
+        case 'w':
             g_width = atoi(optarg);
             printf("\t width=%d", g_width);
             break;
 
-        case 'h':	
+        case 'h':
             g_height = atoi(optarg);
             printf("\t height=%d\n",g_height);
             break;
 
-        default:	
+        default:
             printf("default resolution set for test\n");
            break;
         }				/* -----  end switch  ----- */
@@ -2953,15 +3227,15 @@ int main(int argc, char **argv)
 
 
 	switch(test) {
-    case CAPTURE_TEST:	
+    case CAPTURE_TEST:
         snapshot_test();
         break;
 
-    case VIDEO_RECORD_TEST:	
+    case VIDEO_RECORD_TEST:
         recording_test();
         break;
 
-    case PREVIEW_TEST:	
+    case PREVIEW_TEST:
         preview_test();
         if(mCameraID == V4L2_SENSOR_PRIMARY)
         {
