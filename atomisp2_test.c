@@ -30,29 +30,30 @@
 /************************************************************************************/
 //#define DUMP_FILE
 #define V4L2_SENSOR_DEFAULT                 V4L2_SENSOR_PRIMARY
-#define NUM_OF_PREVIEW_FRMAE                100
-#define NUM_PREVIEW_BUFFERS                 6
-#define NUM_RECORDING_BUFFERS               6
-#define NUM_SNAPSHOT_BUFFERS                1
-#define NUM_POSTVIEW_BUFFERS                1
+#define NUM_OF_PREVIEW_FRAME                100
+#define NUM_PREVIEW_BUFFERS                 4
+#define NUM_RECORDING_BUFFERS               4
+#define NUM_SNAPSHOT_BUFFERS                4
+#define NUM_POSTVIEW_BUFFERS                4
 #define DEFAULT_PREVIEW_WIDTH               800
 #define DEFAULT_PREVIEW_HEIGHT              600
-#define DEFAULT_PREVIEW_FORMAT              V4L2_PIX_FMT_YUV420
-#define DEFAULT_RECORDING_WIDTH             1920
-#define DEFAULT_RECORDING_HEIGHT            1080
-#define DEFAULT_RECORDING_FORMAT            V4L2_PIX_FMT_YUV420
+#define DEFAULT_PREVIEW_FORMAT              V4L2_PIX_FMT_NV12
+#define DEFAULT_RECORDING_WIDTH             1280
+#define DEFAULT_RECORDING_HEIGHT            720
+#define DEFAULT_RECORDING_FORMAT            V4L2_PIX_FMT_NV12
 #define DEFAULT_PRIMARY_SNAPSHOT_WIDTH      3264
 #define DEFAULT_PRIMARY_SNAPSHOT_HEIGHT     2448
-#define DEFAULT_PRIMARY_SNAPSHOT_FORMAT     V4L2_PIX_FMT_YUV420
+#define DEFAULT_PRIMARY_SNAPSHOT_FORMAT     V4L2_PIX_FMT_NV12
 #define DEFAULT_SECONDARY_SNAPSHOT_WIDTH    1280
 #define DEFAULT_SECONDARY_SNAPSHOT_HEIGHT   720
-#define DEFAULT_SECONDARY_SNAPSHOT_FORMAT   V4L2_PIX_FMT_YUV420
+#define DEFAULT_SECONDARY_SNAPSHOT_FORMAT   V4L2_PIX_FMT_NV12
 #define DEFAULT_POSTVIEW_WIDTH              320
 #define DEFAULT_POSTVIEW_HEIGHT             240
-#define DEFAULT_POSTVIEW_FORMAT             V4L2_PIX_FMT_YUV420
+#define DEFAULT_POSTVIEW_FORMAT             V4L2_PIX_FMT_NV12
 #define DEFAULT_CAPTURE_FPS                 30
 #define BPP                                 2
 #define SKIP_FRAMES_OF_SECONDARY            4
+#define DEFAULT_CAPTURE_COUNT               4  //can not big then NUM_SNAPSHOT_BUFFERS
 
 #define V4L2_MAX_DEVICE_COUNT               (V4L2_ISP_SUBDEV+1)
 #define ATOMISP_IOC_S_EXPOSURE              _IOW('v', BASE_VIDIOC_PRIVATE + 40, struct atomisp_exposure)
@@ -60,6 +61,22 @@
 #define ATOMISP_IOC_S_PARAMETERS            _IOW('v', BASE_VIDIOC_PRIVATE + 61, struct atomisp_parameters)
 #define CLEAR(x)                            memset (&(x), 0, sizeof (x))
 #define main_fd                             video_fds[V4L2_MAIN_DEVICE]
+
+/************************************************************************************/
+/* Frame status. This is used to detect corrupted frames and flash
+ * exposed frames. Usually, the first 2 frames coming out of the sensor
+ * are corrupted. When using flash, the frame before and the frame after
+ * the flash exposed frame may be partially exposed by flash. The ISP
+ * statistics for these frames should not be used by the 3A library.
+ * The frame status value can be found in the "reserved" field in the
+ * v4l2_buffer struct. */
+enum atomisp_frame_status {
+	ATOMISP_FRAME_STATUS_OK,
+	ATOMISP_FRAME_STATUS_CORRUPTED,
+	ATOMISP_FRAME_STATUS_FLASH_EXPOSED,
+	ATOMISP_FRAME_STATUS_FLASH_PARTIAL,
+	ATOMISP_FRAME_STATUS_FLASH_FAILED,
+};
 
 /* #define V4L2_CTRL_CLASS_FLASH 0x009c0000    [> Camera flash controls <] */
 
@@ -220,7 +237,8 @@ static struct camera_buffer *snapshotBuf = NULL;
 static struct camera_buffer *postviewBuf = NULL;
 static int video_fds[V4L2_MAX_DEVICE_COUNT];
 static struct devices mDevices[V4L2_MAX_DEVICE_COUNT];
-static int g_width, g_height;
+static int g_width = DEFAULT_SECONDARY_SNAPSHOT_WIDTH;
+static int g_height = DEFAULT_SECONDARY_SNAPSHOT_HEIGHT;
 static int dump = 0;
 static pthread_t preview_thread_id;
 static pthread_t snapshot_thread_id;
@@ -527,6 +545,13 @@ static int v4l2_dequeue_buffer(int fd)
         printf("ioctl VIDIOC_DQBUF failed\n");
         return -1;
     }
+	int frame_status = v4l2_buffer.reserved;
+
+	// atom flag is an extended set of flags, so map V4L2 flags¬
+	// we are interested into atomisp_frame_status¬
+	if (v4l2_buffer.flags & V4L2_BUF_FLAG_ERROR)
+		frame_status = ATOMISP_FRAME_STATUS_CORRUPTED;
+    printf("fd=%d index=%d frame_status=%d\n", fd, v4l2_buffer.index, frame_status);
 
     return v4l2_buffer.index;
 }
@@ -1496,7 +1521,7 @@ int configureContinuous()
 {
     int ret = 0;
 
-    requestContCapture(1, -1, 0);
+    requestContCapture(10, -1, 0);
 
     ret = configureDevice(V4L2_MAIN_DEVICE, CI_MODE_PREVIEW, &snapshot, 0);
     if (ret < 0)
@@ -1962,14 +1987,6 @@ static int start()
             break;
     };
 
-	/* test use start */
-	set_hflip(main_fd, 0);
-
-	if (video_fds[V4L2_POSTVIEW_DEVICE] > 0)
-		set_hflip(video_fds[V4L2_POSTVIEW_DEVICE], 1);
-	if (video_fds[V4L2_PREVIEW_DEVICE] > 0)
-		set_hflip(video_fds[V4L2_PREVIEW_DEVICE], 1);
-	/* test use end */
 
 	if (vflip_enable)
 		set_vflip(main_fd, vflip_enable);
@@ -2008,6 +2025,8 @@ static int start()
 int stopDevice(int device)
 {
     int fd = video_fds[device];
+	struct v4l2_requestbuffers req_buf;
+	int ret;
 
     if (fd >= 0 && mDevices[device].state == DEVICE_STARTED)
     {
@@ -2015,6 +2034,19 @@ int stopDevice(int device)
         v4l2_stream_off(fd);
     }
     mDevices[device].state = DEVICE_CONFIGURED;
+
+    CLEAR(req_buf);
+
+    req_buf.memory = V4L2_MEMORY_MMAP;
+    req_buf.count = 0;
+    req_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    ret = ioctl(fd, VIDIOC_REQBUFS, &req_buf);
+    if (ret < 0)
+    {
+        printf("VIDIOC_REQBUFS returned: %d (%s)\n", ret, strerror(errno));
+        return ret;
+    }
 
     return 0;
 }
@@ -2071,9 +2103,9 @@ int  stopCapture()
 int stopContinuousPreview()
 {
     int error = 0;
-    if (stopCapture() != 0)
-        ++error;
     if (requestContCapture(0, 0, 0) != 0)
+        ++error;
+    if (stopCapture() != 0)
         ++error;
     if (stopPreview() != 0)
         ++error;
@@ -2338,7 +2370,7 @@ static int preview_test()
     printf("start preview OK\n");
 
     sprintf(filename, "%s_preview_%dx%d.yuv", mCameraID ? "secondCamera" : "primaryCamera", preview.width, preview.height);
-    while(loop < NUM_OF_PREVIEW_FRMAE)
+    while(loop < NUM_OF_PREVIEW_FRAME)
     {
         if(update_time)
         {
@@ -2446,7 +2478,7 @@ static int preview_test2()
     printf("start preview OK\n");
 
     sprintf(filename, "%s_preview2_%dx%d.yuv", mCameraID ? "secondCamera" : "primaryCamera", preview.width, preview.height);
-    while(loop < NUM_OF_PREVIEW_FRMAE)
+    while(loop < NUM_OF_PREVIEW_FRAME)
     {
         if(update_time)
         {
@@ -2571,7 +2603,7 @@ static int recording_test()
     printf("start recording OK\n");
 
     sprintf(filename, "%s_record_%dx%d.yuv", mCameraID ? "secondCamera" : "primaryCamera", recording.width, recording.height);
-    while(loop < NUM_OF_PREVIEW_FRMAE)
+    while(loop < NUM_OF_PREVIEW_FRAME)
     {
         if(update_time)
         {
@@ -2781,10 +2813,13 @@ void *preview_thread()
     int update_time = 1;
     struct timeval start_time, stop_time, diff;
     int signum;
+	char filename[64];
+	int j;
     printf("%s++\n",__func__);
     signal(SIGQUIT, thread_exit);
 
     printf("enter preview thread\n");
+    sprintf(filename, "%s_continuous_preview_%dx%d.yuv", mCameraID ? "secondCamera" : "primaryCamera", preview.width, preview.height);
     while(1)
     {
         if(update_time)
@@ -2793,9 +2828,30 @@ void *preview_thread()
             update_time = 0;
         }
         int index = v4l2_dequeue_buffer(video_fds[V4L2_PREVIEW_DEVICE]);
+		if (index < 0 || index >= NUM_PREVIEW_BUFFERS)
+			printf("preview new buffer index=%d failed\n", index);
 
         loop++;
         preview_fps++;
+        if (dump)
+        {
+            printf("get new buffer, index=%d\n", index);
+            FILE * fp = fopen(filename, "ab+");
+            if(fp)
+            {
+                for(j = 0; j < preview.height * 3/2; j++)
+                {
+                    fwrite((char *)(previewBuf[index].viraddr + preview.stride * j), 1, preview.width, fp);
+                }
+                fflush(fp);
+                fclose(fp);
+                fp = NULL;
+            }
+            else
+            {
+                printf("open file[%s] failed\n", filename);
+            }
+        }
 
         v4l2_queue_buffer(video_fds[V4L2_PREVIEW_DEVICE], index);
         gettimeofday(&stop_time,0);
@@ -2811,6 +2867,76 @@ void *preview_thread()
     printf("%s--\n",__func__);
 
     return NULL;
+}
+
+/*
+ **************************************************************************
+ * FunctionName: grab_frame;
+ * Description : NA;
+ * Input       : NA;
+ * Output      : NA;
+ * ReturnValue : NA;
+ * Other       : NA;
+ **************************************************************************
+ */
+void grab_frame(int device, int frame_count)
+{
+    int loop = 0;
+    int preview_fps = 0;
+    int update_time = 1;
+	int fd = video_fds[device];
+    struct timeval start_time, stop_time, diff;
+    int signum;
+	char filename[64]={0};
+	int j;
+    printf("%s++\n",__func__);
+
+    sprintf(filename, "%s_grab_preview_%dx%d.yuv", mCameraID ? "secondCamera" : "primaryCamera", preview.width, preview.height);
+    while(loop < frame_count)
+    {
+        if(update_time)
+        {
+            gettimeofday(&start_time,0);
+            update_time = 0;
+        }
+        int main_index = v4l2_dequeue_buffer(main_fd);
+        int index = v4l2_dequeue_buffer(fd);
+
+        loop++;
+        preview_fps++;
+        if (dump)
+        {
+            printf("get new buffer, index=%d\n", index);
+            FILE * fp = fopen(filename, "ab+");
+            if(fp)
+            {
+                for(j = 0; j < preview.height * 3/2; j++)
+                {
+                    fwrite((char *)(previewBuf[index].viraddr + preview.stride * j), 1, preview.width, fp);
+                }
+                fflush(fp);
+                fclose(fp);
+                fp = NULL;
+            }
+            else
+            {
+                printf("open file[%s] failed\n", filename);
+            }
+        }
+
+        v4l2_queue_buffer(fd, index);
+        v4l2_queue_buffer(main_fd, main_index);
+        gettimeofday(&stop_time,0);
+        time_subtract(&diff,&start_time,&stop_time);
+
+        if(diff.tv_sec == 1)
+        {
+            update_time = 1;
+            printf("current fps = %d\n", preview_fps);
+            preview_fps = 0;
+        }
+    }
+    printf("%s--\n",__func__);
 }
 
 /*
@@ -2832,8 +2958,9 @@ void *snapshot_thread()
 
 	printf("%s++\n",__func__);
     printf("enter snapshot thread\n");
+    requestContCapture(DEFAULT_CAPTURE_COUNT, -1, 0);
     startCapture();
-    printf("start snapshot OK\n");
+
 
     ret = waitForCaptureStart();
     if(ret < 0)
@@ -2842,16 +2969,19 @@ void *snapshot_thread()
         return NULL;
     }
 
+    printf("start snapshot OK\n");
+
     loop = 0;
 	sprintf(filename, "%s_snapshot_%dx%d.yuv", mCameraID ? "secondCamera" : "primaryCamera", snapshot.width, snapshot.height);
 
-    while(loop < 1)
+    while(loop < DEFAULT_CAPTURE_COUNT)
     {
         int snapshot_index = v4l2_dequeue_buffer(main_fd);
         int postview_index = v4l2_dequeue_buffer(video_fds[V4L2_POSTVIEW_DEVICE]);
-
-        printf("get new buffer, index=%d\n", snapshot_index);
-        FILE * fp = fopen(filename, "w");
+		if (dump)
+		{
+        printf("get snapshot new buffer, index=%d\n", snapshot_index);
+        FILE * fp = fopen(filename, "ab+");
         if(fp)
         {
             for(j = 0; j < snapshot.height * 3/2; j++)
@@ -2867,9 +2997,11 @@ void *snapshot_thread()
             printf("open file[%s] failed\n", filename);
         }
 
-        v4l2_queue_buffer(main_fd, snapshot_index);
-        v4l2_queue_buffer(video_fds[V4L2_POSTVIEW_DEVICE], postview_index);
-        loop++;
+		}
+
+		loop++;
+		v4l2_queue_buffer(main_fd, snapshot_index);
+		v4l2_queue_buffer(video_fds[V4L2_POSTVIEW_DEVICE], postview_index);
     }
     pthread_kill(preview_thread_id, SIGQUIT);
     printf("%s--\n",__func__);
@@ -2917,20 +3049,12 @@ int primary_snapshot_test()
         closeDevice(V4L2_MAIN_DEVICE);
         return -1;
     }
-/*
-  test use:framsize enum ioctl test
-*/
-    v4l2_enum_framesize(video_fds[V4L2_MAIN_DEVICE], snapshot.format);
-    v4l2_enum_framesize(video_fds[V4L2_PREVIEW_DEVICE], preview.format);
-    v4l2_enum_framesize(video_fds[V4L2_POSTVIEW_DEVICE], postview.format);
-
-    v4l2_enum_frameinterval(video_fds[V4L2_MAIN_DEVICE], snapshot.format, snapshot.width, snapshot.height);
     start();
     printf("start preview OK\n");
 
     pthread_create(&preview_thread_id, NULL, &preview_thread, NULL);
 
-    sleep(5);
+    sleep(2);
 
     pthread_create(&snapshot_thread_id, NULL, &snapshot_thread, NULL);
 
@@ -3116,8 +3240,8 @@ int main(int argc, char **argv)
         {"record" , no_argument, 0, 'r'},
         {"preview", no_argument, 0, 'p'},
         {"camera_id",  required_argument, 0, 'i'},
-        {"width",  required_argument, 0, 'w'},
-        {"height",  required_argument, 0, 'h'},
+        {"width",  optional_argument, 0, 'w'},
+        {"height",  optional_argument, 0, 'h'},
         {"flash_en", no_argument, 0, 'f'},
         {"flash_torch", optional_argument, 0, 't'},
         {"flash_indicator", optional_argument, 0, 'I'},
