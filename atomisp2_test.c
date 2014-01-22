@@ -32,9 +32,9 @@
 #define V4L2_SENSOR_DEFAULT                 V4L2_SENSOR_PRIMARY
 #define NUM_OF_PREVIEW_FRAME                100
 #define NUM_PREVIEW_BUFFERS                 4
-#define NUM_RECORDING_BUFFERS               4
-#define NUM_SNAPSHOT_BUFFERS                4
-#define NUM_POSTVIEW_BUFFERS                4
+#define NUM_RECORDING_BUFFERS               1
+#define NUM_SNAPSHOT_BUFFERS                1
+#define NUM_POSTVIEW_BUFFERS                1
 #define DEFAULT_PREVIEW_WIDTH               800
 #define DEFAULT_PREVIEW_HEIGHT              600
 #define DEFAULT_PREVIEW_FORMAT              V4L2_PIX_FMT_NV12
@@ -516,7 +516,7 @@ static int v4l2_queue_buffer(int fd, int index)
 
     if (ioctl (fd, VIDIOC_QBUF, &buf) < 0)
     {
-        printf("ioctl VIDIOC_QBUF failed\n");
+        printf("ioctl VIDIOC_QBUF failed %d, %s\n", errno, strerror(errno));
         return -1;
     }
 
@@ -542,7 +542,7 @@ static int v4l2_dequeue_buffer(int fd)
 
     if (ioctl (fd, VIDIOC_DQBUF, &v4l2_buffer) < 0)
     {
-        printf("ioctl VIDIOC_DQBUF failed\n");
+        printf("ioctl VIDIOC_DQBUF failed %d, %s\n", errno, strerror(errno));
         return -1;
     }
 	int frame_status = v4l2_buffer.reserved;
@@ -573,7 +573,7 @@ static int v4l2_stream_on(int fd)
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl (fd, VIDIOC_STREAMON, &type) < 0)
     {
-        printf("ioctl VIDIOC_STREAMON failed\n");
+        printf("ioctl VIDIOC_STREAMON failed %d, %s\n", errno, strerror(errno));
         return -1;
     }
 
@@ -597,7 +597,7 @@ static int v4l2_stream_off(int fd)
     type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl (fd, VIDIOC_STREAMOFF, &type) < 0)
     {
-        printf("ioctl VIDIOC_STREAMOFF failed\n");
+        printf("ioctl VIDIOC_STREAMOFF failed %d, %s\n", errno, strerror(errno));
         return -1;
     }
 
@@ -1656,6 +1656,25 @@ static int configure(enum AtomIspMode mode)
     return status;
 }
 
+int releaseBuffer(int fd)
+{
+    struct v4l2_requestbuffers req_buf;
+	int ret = 0;
+    CLEAR(req_buf);
+
+    req_buf.memory = V4L2_MEMORY_MMAP;
+    req_buf.count = 0;
+    req_buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+    ret = ioctl(fd, VIDIOC_REQBUFS, &req_buf);
+    if (ret < 0)
+    {
+        printf("VIDIOC_REQBUFS returned: %d (%s)\n",ret, strerror(errno));
+        return ret;
+    }
+	return 0;
+}
+
 /*
  **************************************************************************
  * FunctionName: prepareDevice;
@@ -1800,7 +1819,7 @@ static int startDevice(int device, int buffer_count)
     int fd = video_fds[device];
     printf("startDevice fd = %d\n", fd);
 
-    if (mDevices[device].state != DEVICE_PREPARED)
+    /* if (mDevices[device].state != DEVICE_PREPARED) */
     {
         ret = prepareDevice(device, buffer_count);
         if (ret < 0)
@@ -2028,7 +2047,7 @@ int stopDevice(int device)
 	struct v4l2_requestbuffers req_buf;
 	int ret;
 
-    if (fd >= 0 && mDevices[device].state == DEVICE_STARTED)
+    /* if (fd >= 0 && mDevices[device].state == DEVICE_STARTED) */
     {
         //stream off
         v4l2_stream_off(fd);
@@ -2065,7 +2084,7 @@ static int stopPreview()
 {
     stopDevice(V4L2_PREVIEW_DEVICE);
 
-    closeDevice(V4L2_PREVIEW_DEVICE);
+    /* closeDevice(V4L2_PREVIEW_DEVICE); */
     mDevices[V4L2_PREVIEW_DEVICE].state = DEVICE_CLOSED;
 
     return 0;
@@ -2083,9 +2102,8 @@ static int stopPreview()
  */
 int  stopCapture()
 {
-    stopDevice(V4L2_MAIN_DEVICE);
-
     stopDevice(V4L2_POSTVIEW_DEVICE);
+    stopDevice(V4L2_MAIN_DEVICE);
 
     return 0;
 }
@@ -2290,7 +2308,7 @@ static int deinitCameraParams()
     {
         free(previewBuf);
         previewBuf = NULL;
-        closeDevice(V4L2_PREVIEW_DEVICE);
+        /* closeDevice(V4L2_PREVIEW_DEVICE); */
     }
 
     deinit_camera_buffers(snapshotBuf, BUFFER_TYPE_SNAPSHOT);
@@ -2298,7 +2316,7 @@ static int deinitCameraParams()
     {
         free(snapshotBuf);
         snapshotBuf = NULL;
-        closeDevice(V4L2_MAIN_DEVICE);
+        /* closeDevice(V4L2_MAIN_DEVICE); */
     }
 
     deinit_camera_buffers(postviewBuf, BUFFER_TYPE_POSTVIEW);
@@ -2306,7 +2324,7 @@ static int deinitCameraParams()
     {
         free(postviewBuf);
         postviewBuf = NULL;
-        closeDevice(V4L2_POSTVIEW_DEVICE);
+        /* closeDevice(V4L2_POSTVIEW_DEVICE); */
     }
 
     deinit_camera_buffers(recordingBuf, BUFFER_TYPE_RECORDING);
@@ -2314,7 +2332,7 @@ static int deinitCameraParams()
     {
         free(recordingBuf);
         recordingBuf = NULL;
-        closeDevice(V4L2_MAIN_DEVICE);
+        /* closeDevice(V4L2_MAIN_DEVICE); */
     }
 
     return 0;
@@ -2421,6 +2439,10 @@ static int preview_test()
 
     stop();
     printf("stop preview OK\n");
+
+    closeDevice(V4L2_MAIN_DEVICE);
+    closeDevice(V4L2_PREVIEW_DEVICE);
+    mDevices[V4L2_MAIN_DEVICE].state = DEVICE_CLOSED;
 
     deinitCameraParams();
     printf("%s--\n\n",__func__);
@@ -2531,6 +2553,7 @@ static int preview_test2()
     printf("stop preview OK\n");
 
     deinitCameraParams();
+	closeDevice(V4L2_MAIN_DEVICE);
     printf("%s--\n\n",__func__);
 
     return 0;
@@ -2663,6 +2686,9 @@ static int recording_test()
 
     stop();
     printf("stop recording OK\n");
+
+    closeDevice(V4L2_MAIN_DEVICE);
+    mDevices[V4L2_MAIN_DEVICE].state = DEVICE_CLOSED;
 
     deinitCameraParams();
     printf("%s--\n\n",__func__);
@@ -2860,13 +2886,115 @@ void *preview_thread()
         if(diff.tv_sec == 1)
         {
             update_time = 1;
-            printf("current fps = %d\n", preview_fps);
+            printf("preview current fps = %d\n", preview_fps);
             preview_fps = 0;
         }
     }
     printf("%s--\n",__func__);
 
     return NULL;
+}
+
+int grab_all_frame(int frame_count)
+{
+    int j = 0;
+    int loop = 0;
+    int ret = 0;
+    char filename[64];
+
+	printf("%s++\n",__func__);
+
+	sprintf(filename, "%s_snapshot_%dx%d.yuv", mCameraID ? "secondCamera" : "primaryCamera", snapshot.width, snapshot.height);
+
+    while(loop < frame_count)
+    {
+        int preview_index = v4l2_dequeue_buffer(video_fds[V4L2_PREVIEW_DEVICE]);
+        int snapshot_index = v4l2_dequeue_buffer(main_fd);
+        int postview_index = v4l2_dequeue_buffer(video_fds[V4L2_POSTVIEW_DEVICE]);
+
+        printf("get snapshot new buffer, index=%d\n", snapshot_index);
+		if (dump)
+		{
+			FILE * fp = fopen(filename, "ab+");
+			if(fp)
+			{
+				for(j = 0; j < snapshot.height * 3/2; j++)
+				{
+					fwrite((char *)(snapshotBuf[snapshot_index].viraddr + snapshot.stride * j), 1, snapshot.width, fp);
+				}
+				fflush(fp);
+				fclose(fp);
+				fp = NULL;
+			}
+			else
+			{
+				printf("open file[%s] failed\n", filename);
+			}
+		}
+
+        v4l2_queue_buffer(video_fds[V4L2_PREVIEW_DEVICE], preview_index);
+        /* v4l2_queue_buffer(main_fd, snapshot_index); */
+        /* v4l2_queue_buffer(video_fds[V4L2_POSTVIEW_DEVICE], postview_index); */
+        loop++;
+    }
+    printf("%s--\n\n",__func__);
+	return 0;
+}
+
+int grab_preview_frame(int frame_count)
+{
+    int loop = 0;
+    int preview_fps = 0;
+    int update_time = 1;
+    struct timeval start_time, stop_time, diff;
+	char filename[64];
+	int j = 0;
+	int i = 0;
+    printf("%s++\n",__func__);
+
+	sprintf(filename, "%s_preview_%dx%d.yuv", mCameraID ? "secondCamera" : "primaryCamera", preview.width, preview.height);
+    while(loop < frame_count)
+    {
+        if(update_time)
+        {
+            gettimeofday(&start_time,0);
+            update_time = 0;
+        }
+        int index = v4l2_dequeue_buffer(video_fds[V4L2_PREVIEW_DEVICE]);
+		printf("preview index=%d\n", index);
+		if (dump)
+		{
+			FILE * fp = fopen(filename, "ab+");
+			if(fp)
+			{
+				for(j = 0; j < preview.height * 3/2; j++)
+				{
+					fwrite((char *)(previewBuf[index].viraddr + preview.stride * j), 1, preview.width, fp);
+				}
+				fflush(fp);
+				fclose(fp);
+				fp = NULL;
+			}
+			else
+			{
+				printf("open file[%s] failed\n", filename);
+			}
+		}
+        loop++;
+        preview_fps++;
+
+        v4l2_queue_buffer(video_fds[V4L2_PREVIEW_DEVICE], index);
+        gettimeofday(&stop_time,0);
+        time_subtract(&diff,&start_time,&stop_time);
+        if(diff.tv_sec == 1)
+        {
+            update_time = 1;
+            printf("preview current fps = %d\n", preview_fps);
+            preview_fps = 0;
+        }
+    }
+    printf("%s--\n\n",__func__);
+	return 0;
 }
 
 /*
@@ -2939,6 +3067,50 @@ void grab_frame(int device, int frame_count)
     printf("%s--\n",__func__);
 }
 
+int grab_snapshotframe(int frame_count)
+{
+    int j = 0;
+    int loop = 0;
+    int ret = 0;
+    char filename[64];
+
+	printf("%s++\n",__func__);
+
+	sprintf(filename, "%s_snapshot_%dx%d.yuv", mCameraID ? "secondCamera" : "primaryCamera", snapshot.width, snapshot.height);
+
+    while(loop < frame_count)
+    {
+        int snapshot_index = v4l2_dequeue_buffer(main_fd);
+        int postview_index = v4l2_dequeue_buffer(video_fds[V4L2_POSTVIEW_DEVICE]);
+
+        printf("get snapshot new buffer, index=%d\n", snapshot_index);
+		if (dump)
+		{
+			FILE * fp = fopen(filename, "ab+");
+			if(fp)
+			{
+				for(j = 0; j < snapshot.height * 3/2; j++)
+				{
+					fwrite((char *)(snapshotBuf[snapshot_index].viraddr + snapshot.stride * j), 1, snapshot.width, fp);
+				}
+				fflush(fp);
+				fclose(fp);
+				fp = NULL;
+			}
+			else
+			{
+				printf("open file[%s] failed\n", filename);
+			}
+		}
+
+        /* v4l2_queue_buffer(main_fd, snapshot_index); */
+        /* v4l2_queue_buffer(video_fds[V4L2_POSTVIEW_DEVICE], postview_index); */
+        loop++;
+    }
+    printf("%s--\n\n",__func__);
+	return 0;
+}
+
 /*
  **************************************************************************
  * FunctionName: snapshot_thread;
@@ -3007,6 +3179,297 @@ void *snapshot_thread()
     printf("%s--\n",__func__);
 
     return NULL;
+}
+
+int continuous_grab_snapshot(int preview_count, int snapshot_count)
+{
+	int ret;
+	struct timeval start, end, diff;
+	unsigned long delt;
+	printf("%s++\n", __func__);
+	/* stopCapture(); */
+
+    requestContCapture(-1, 0, 0);
+#if 1
+	gettimeofday(&start, NULL);
+	v4l2_stream_off(video_fds[V4L2_MAIN_DEVICE]);
+    deinit_camera_buffers(snapshotBuf, BUFFER_TYPE_SNAPSHOT);
+	releaseBuffer(video_fds[V4L2_MAIN_DEVICE]);
+
+	v4l2_stream_off(video_fds[V4L2_POSTVIEW_DEVICE]);
+    deinit_camera_buffers(postviewBuf, BUFFER_TYPE_POSTVIEW);
+	releaseBuffer(video_fds[V4L2_POSTVIEW_DEVICE]);
+	gettimeofday(&end, NULL);
+	time_subtract(&diff, &start, &end);
+	delt = (unsigned long)(diff.tv_sec * 1000000 + diff.tv_usec);
+	printf("release buf spare time=%u\n", delt);
+
+#endif
+	grab_preview_frame(10);
+	/* sleep(2); */
+#if 1
+	gettimeofday(&start, NULL);
+    /* requestContCapture(1, -1, 0); */
+    int status = prepareDevice(V4L2_MAIN_DEVICE, NUM_SNAPSHOT_BUFFERS);
+    if (status < 0)
+    {
+        printf("prepareDevice  main device failed\n");
+        return -1;
+    }
+	gettimeofday(&end, NULL);
+	time_subtract(&diff, &start, &end);
+	delt = (unsigned long)(diff.tv_sec * 1000000 + diff.tv_usec);
+	printf("request buf spare time=%u\n", delt);
+#endif
+
+    //Qbuf
+    ret = activateBufferPool(V4L2_MAIN_DEVICE, NUM_SNAPSHOT_BUFFERS);
+    if (ret < 0)
+    {
+        printf("activateBufferPool main failed\n");
+        return ret;
+    }
+    //stream on
+    ret = v4l2_stream_on(video_fds[V4L2_MAIN_DEVICE]);
+    if(ret < 0)
+    {
+        printf("stream on main device failed\n");
+        return -1;
+    }
+
+    status = prepareDevice(V4L2_POSTVIEW_DEVICE, NUM_POSTVIEW_BUFFERS);
+    if (status < 0)
+    {
+        printf("prepareDevice failed\n");
+        return -1;
+    }
+    ret = activateBufferPool(V4L2_POSTVIEW_DEVICE, NUM_POSTVIEW_BUFFERS);
+    if (ret < 0)
+    {
+        printf("activateBufferPool main failed\n");
+        return ret;
+    }
+
+    ret = v4l2_stream_on(video_fds[V4L2_POSTVIEW_DEVICE]);
+    if(ret < 0)
+    {
+        printf("stream on postview failed\n");
+        return -1;
+    }
+	/* grab_preview_frame(10); */
+	gettimeofday(&start, NULL);
+#if 1
+	ret = pollCapture(2000);
+    if(ret < 0)
+    {
+        printf("waitForCaptureStart failed\n");
+		return -1;
+    }
+#endif
+	/* grab_preview_frame(1); */
+	grab_snapshotframe(1);
+	gettimeofday(&end, NULL);
+	time_subtract(&diff, &start, &end);
+	delt = (unsigned long)(diff.tv_sec * 1000000 + diff.tv_usec);
+	printf("grab still frame spare time=%u\n", delt);
+	printf("%s--\n", __func__);
+	return 0;
+}
+
+int primary_continuous_capture()
+{
+    int i = 0;
+    void *snapshot_ret;
+	int ret;
+    int status = 0;
+
+    printf("%s++\n",__func__);
+    for(i = 0; i < V4L2_MAX_DEVICE_COUNT; i++)
+    {
+        video_fds[i] = -1;
+        mDevices[i].state = DEVICE_CLOSED;
+    }
+
+    initCameraParams();
+    ret = openDevice(V4L2_MAIN_DEVICE);
+    if (ret < 0)
+    {
+        printf("Failed to open first device!\n");
+        return -1;
+    }
+    selectCameraSensor();
+    requestContCapture(DEFAULT_CAPTURE_COUNT, -1, 0);
+    updateCameraParams();
+    ret = configureDevice(V4L2_MAIN_DEVICE, CI_MODE_PREVIEW, &snapshot, 0);
+    if (ret < 0)
+    {
+        printf("configure first device failed!\n");
+        return -1;
+    }
+    ret = openDevice(V4L2_PREVIEW_DEVICE);
+    if (ret < 0)
+    {
+        printf("Open preview device failed!\n");
+        return -1;
+    }
+    ret = configureDevice(V4L2_PREVIEW_DEVICE,CI_MODE_PREVIEW,&preview, 0);
+    if(ret < 0)
+    {
+        printf("configureDevice failed\n");
+    }
+
+    ret = openDevice(V4L2_POSTVIEW_DEVICE);
+    if (ret < 0)
+    {
+        printf("Open second device failed!");
+        return -1;
+    }
+    ret = configureDevice(V4L2_POSTVIEW_DEVICE, CI_MODE_PREVIEW, &postview, 0);
+    if (ret < 0)
+    {
+        printf("configure second device failed!");
+        closeDevice(V4L2_POSTVIEW_DEVICE);
+        return ret;
+    }
+	ret = prepareDevice(V4L2_PREVIEW_DEVICE, NUM_PREVIEW_BUFFERS);
+	if (ret < 0)
+	{
+		printf("prepareDevice previw device failed\n");
+		return ret;
+	}
+
+    ret = activateBufferPool(V4L2_PREVIEW_DEVICE, NUM_PREVIEW_BUFFERS);
+    if (ret < 0)
+    {
+        printf("activateBufferPool failed\n");
+        return ret;
+    }
+    printf("queue buf sucess\n");
+
+    //stream on video2
+    ret = v4l2_stream_on(video_fds[V4L2_PREVIEW_DEVICE]);
+    if(ret < 0)
+    {
+        printf("stream on failed\n");
+        return -1;
+    }
+
+	grab_preview_frame(10);
+    /* sleep(2); */
+
+    requestContCapture(1, -1, 0);
+    status = prepareDevice(V4L2_MAIN_DEVICE, NUM_SNAPSHOT_BUFFERS);
+    if (status < 0)
+    {
+        printf("prepareDevice  main device failed\n");
+        return -1;
+    }
+    //Qbuf
+    ret = activateBufferPool(V4L2_MAIN_DEVICE, NUM_SNAPSHOT_BUFFERS);
+    if (ret < 0)
+    {
+        printf("activateBufferPool main failed\n");
+        return ret;
+    }
+    //stream on
+    ret = v4l2_stream_on(video_fds[V4L2_MAIN_DEVICE]);
+    if(ret < 0)
+    {
+        printf("stream on main device failed\n");
+        return -1;
+    }
+    status = prepareDevice(V4L2_POSTVIEW_DEVICE, NUM_POSTVIEW_BUFFERS);
+    if (status < 0)
+    {
+        printf("prepareDevice failed\n");
+        return -1;
+    }
+    ret = activateBufferPool(V4L2_POSTVIEW_DEVICE, NUM_POSTVIEW_BUFFERS);
+    if (ret < 0)
+    {
+        printf("activateBufferPool main failed\n");
+        return ret;
+    }
+    ret = v4l2_stream_on(video_fds[V4L2_POSTVIEW_DEVICE]);
+    if(ret < 0)
+    {
+        printf("stream on postview failed\n");
+        return -1;
+    }
+
+	grab_snapshotframe(1);
+
+	for (i = 0; i < 10; i++) {
+		continuous_grab_snapshot(10, DEFAULT_CAPTURE_COUNT);
+	}
+    stop();
+    printf("stop OK\n");
+
+    closeDevice(V4L2_MAIN_DEVICE);
+    mDevices[V4L2_MAIN_DEVICE].state = DEVICE_CLOSED;
+
+    deinitCameraParams();
+    printf("%s--\n",__func__);
+
+    return 0;
+}
+
+int primary_still_capture()
+{
+    int i = 0;
+	int ret;
+    int status = 0;
+
+    printf("%s++\n",__func__);
+    for(i = 0; i < V4L2_MAX_DEVICE_COUNT; i++)
+    {
+        video_fds[i] = -1;
+        mDevices[i].state = DEVICE_CLOSED;
+    }
+
+    initCameraParams();
+    ret = openDevice(V4L2_MAIN_DEVICE);
+    if (ret < 0)
+    {
+        printf("Failed to open first device!\n");
+        return -1;
+    }
+    selectCameraSensor();
+    updateCameraParams();
+
+	configure(CI_MODE_CONTINUOUS_CAPTURE);
+	start();
+	grab_preview_frame(10);
+	stop();
+	deinitCameraParams();
+	/* closeDevice(V4L2_POSTVIEW_DEVICE); */
+	closeDevice(V4L2_PREVIEW_DEVICE);
+
+	initCameraParams();
+	configure(CI_MODE_CAPTURE);
+	start();
+	grab_snapshotframe(4);
+	stop();
+	deinitCameraParams();
+	closeDevice(V4L2_POSTVIEW_DEVICE);
+	/* closeDevice(V4L2_PREVIEW_DEVICE); */
+
+	initCameraParams();
+	configure(CI_MODE_CONTINUOUS_CAPTURE);
+	start();
+	grab_preview_frame(20);
+    stop();
+    deinitCameraParams();
+    printf("stop OK\n");
+
+    closeDevice(V4L2_POSTVIEW_DEVICE);
+    closeDevice(V4L2_PREVIEW_DEVICE);
+    closeDevice(V4L2_MAIN_DEVICE);
+    mDevices[V4L2_MAIN_DEVICE].state = DEVICE_CLOSED;
+
+    printf("%s--\n",__func__);
+
+    return 0;
 }
 
 /*
@@ -3170,6 +3633,9 @@ int secondary_snapshot_test()
 
     stop();
     printf("stop snapshot OK\n");
+
+    closeDevice(V4L2_MAIN_DEVICE);
+    mDevices[V4L2_MAIN_DEVICE].state = DEVICE_CLOSED;
 
     deinitCameraParams();
     printf("%s--\n\n",__func__);
@@ -3352,7 +3818,16 @@ int main(int argc, char **argv)
 
 	switch(test) {
     case CAPTURE_TEST:
-        snapshot_test();
+		if(mCameraID == V4L2_SENSOR_PRIMARY)
+		{
+			/* snapshot_test(); */
+			/* primary_still_capture(); */
+			primary_continuous_capture();
+		}
+		else
+		{
+			secondary_snapshot_test();
+		}
         break;
 
     case VIDEO_RECORD_TEST:
